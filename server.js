@@ -6,22 +6,26 @@ const cors = require("cors");
 const helmet = require("helmet");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
-const crypto = require("crypto");
 const app = express();
 const port = process.env.PORT || 5000;
 
 // Middleware
 app.use(bodyParser.json());
 app.use(helmet());
+// I will use this when put and head require
+// app.use(cors({
+//   origin: "http://localhost:3000", 
+//   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+//   credentials: true,
+//   optionsSuccessStatus: 204,
+// }));
+
+
 app.use(cors({
-  origin: "http://localhost:3000", 
-  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+  origin: "http://localhost:3000",
+  methods: "GET, POST, PUT, DELETE",
   credentials: true,
-  optionsSuccessStatus: 204,
 }));
-
-
-
   
 
 // MongoDB connection
@@ -44,17 +48,24 @@ db.once("open", () => {
 //MongoDB schema
 // Post schema
 
+// Update the PostSchema to store embedded comments
 const PostSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   content: { type: String, default: "" },
-  media: { type: String, default: null }, // Image or video URL
+  media: { type: String, default: null },
   privacy: {
     type: String,
     enum: ["public", "friends", "only_me"],
     default: "public",
   },
-  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // Array of user IDs who liked
-  comments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Comment" }], // Array of comment IDs
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+  comments: [
+    {
+      user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+      text: { type: String, required: true },
+      createdAt: { type: Date, default: Date.now },
+    },
+  ],
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -171,38 +182,10 @@ app.get(
   }
 );
 
-// app.get('/following', authenticateToken, async (req, res) => {
-//     try {
-//         // Check if the user ID is valid
-//         if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
-//             return res.status(400).json({ success: false, message: 'Invalid user ID' });
-//         }
-
-//         // Fetch the user's following data
-//         const followingData = await Following.findOne({ userId: req.user.id });
-
-//         // If the user doesn't follow anyone or no data is found
-//         if (!followingData || !followingData.following || followingData.following.length === 0) {
-//             return res.status(404).json({ success: false, message: 'You are not following anyone' });
-//         }
-
-//         // Now get the details of the users being followed (assuming you store user info in another model)
-//         const followedUsers = await User.find({
-//             _id: { $in: followingData.following } // Find users whose IDs are in the 'following' array
-//         });
-
-//         // Respond with the list of followed users
-//         res.status(200).json({ success: true, following: followedUsers });
-//     } catch (err) {
-//         console.error('Error getting following data:', err);
-//         res.status(500).json({ success: false, message: 'Server error' });
-//     }
-// });
 
 // Unfollow user API
 app.post("/unfollow", authenticateToken, async (req, res) => {
   const { followingId } = req.body;
-  console.log(req.user.id);
   if (!followingId) {
     return res
       .status(400)
@@ -325,28 +308,46 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Update profile API
-app.post("/upload_dp", authenticateToken, async (req, res) => {
-  try {
-    const { dp } = req.body;
-    console.log("this is dp", dp);
 
-    if (!dp) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Both dp and are required" });
+// Upload file API
+const multer = require("multer");
+const path = require("path");
+
+// Configure Multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/"); // Store files in 'uploads' folder
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); // Rename file with timestamp
+  },
+});
+const upload = multer({ storage: storage });
+
+// Ensure 'uploads' folder exists
+const fs = require("fs");
+if (!fs.existsSync("uploads")) {
+  fs.mkdirSync("uploads");
+}
+
+// Update profile API
+app.post("/upload_dp", authenticateToken, upload.single("dp"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
+    // File path where the image is stored
+    const dpPath = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+    // Assuming you have a User model, update the user's profile with the new image path
     const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      { dp },
-      { new: true }
+      req.user.id, // Use the user ID from the JWT token
+      { dp: dpPath }, // Update dp with the new file path
+      { new: true } // Return the updated user document
     );
 
     if (!updatedUser) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
     res.status(200).json({
@@ -383,26 +384,7 @@ app.get("/userprofile", authenticateToken, async (req, res) => {
   }
 });
 
-// Upload file API
-const multer = require("multer");
-const path = require("path");
 
-// Configure Multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/"); // Store files in 'uploads' folder
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // Rename file with timestamp
-  },
-});
-const upload = multer({ storage });
-
-// Ensure 'uploads' folder exists
-const fs = require("fs");
-if (!fs.existsSync("uploads")) {
-  fs.mkdirSync("uploads");
-}
 
 
 app.use(
@@ -470,11 +452,8 @@ app.post(
         const { content, privacy } = req.body;
         const userId = req.user.id; // Extracted from JWT token
   
-        // ✅ Generate full media URL
         const mediaUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-        console.log(mediaUrl)
   
-        // ✅ Save post in MongoDB with the full image/video URL
         const newPost = new Posts({
           user: userId,
           content: content || "",
@@ -505,6 +484,7 @@ app.get("/media", authenticateToken, async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "No posts found" });
+
     }
 
     // Add full URL to each post
@@ -591,7 +571,6 @@ app.get("/home", authenticateToken, async (req, res) => {
 //Liked API
 app.post("/like", authenticateToken, async (req, res) => {
   const { postId } = req.body;
-
   if (!postId) {
     return res.status(400).json({ success: false, message: "No post found" }); // Use return to stop further execution
   }
@@ -623,5 +602,329 @@ app.post("/like", authenticateToken, async (req, res) => {
   } catch (e) {
     console.error("Error liking post:", e);
     return res.status(500).json({ success: false, message: "Server error" }); // Use return here as well
+  }
+});
+
+//comment API
+
+const { body, validationResult } = require("express-validator");
+const { log } = require("console");
+
+
+
+app.post("/comment", authenticateToken, async (req, res) => {
+  let { postId, comment } = req.body;
+
+  // Validate postId
+  if (!mongoose.Types.ObjectId.isValid(postId)) {
+    return res.status(400).json({ success: false, message: "Invalid post ID" });
+  }
+
+  comment = comment.trim();
+  
+  if (!comment) {
+    return res.status(400).json({ success: false, message: "Comment is required" });
+  }
+
+  try {
+    const post = await Posts.findById(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    const newComment = {
+      user: mongoose.Types.ObjectId(req.user.id),
+      text: comment,
+      createdAt: new Date(),
+    };
+
+    post.comments.push(newComment);
+    await post.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Comment added successfully",
+      comment: newComment,
+    });
+  } catch (error) {
+    console.error("Error adding comment:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Get comments API
+app.get("/comments/:postId", authenticateToken, async (req, res) => {
+  const { postId } = req.params;
+
+  // Validate postId
+  if (!mongoose.Types.ObjectId.isValid(postId)) {
+    return res.status(400).json({ success: false, message: "Invalid post ID" });
+  }
+
+  try {
+    const post = await Posts.findById(postId).populate("comments.user", "username dp");
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    if (!post.comments || post.comments.length === 0) {
+      return res.status(404).json({ success: false, message: "No comments found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      comments: post.comments,
+    });
+  } catch (error) {
+    console.error("Error fetching comments:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+//this API is to get the people i follow
+app.get('/following', authenticateToken, async (req, res) => {
+  try {
+      // Check if the user ID is valid
+      if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
+          return res.status(400).json({ success: false, message: 'Invalid user ID' });
+      }
+
+      // Fetch the user's following data
+      const followingData = await Following.find({ userId: req.user.id });
+
+      // If the user doesn't follow anyone or no data is found
+      
+
+      // Now get the details of the users being followed (assuming you store user info in another model)
+
+      // Respond with the list of followed users
+      res.status(200).json({ success: true, following: followingData });
+  } catch (err) {
+      console.error('Error getting following data:', err);
+      res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+
+
+// This API is to get the people who follow me
+app.get('/followers', authenticateToken, async (req, res) => {
+  try {
+    // Check if the user ID is valid
+    if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid user ID' });
+    }
+
+    // Fetch the followers of the user
+    const followersData = await Following.find({ followingId: req.user.id });
+    if (!followersData || followersData.length === 0) {
+      return res.status(404).json({ success: false, message: 'No followers found' });
+    }
+    // Respond with the list of followers
+    res.status(200).json({ success: true, followers: followersData });
+  } catch (err) {
+    console.error('Error getting followers data:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// This API is to get the data of the people i follow
+app.post('/get-following-data', authenticateToken, async (req, res) => {
+  
+  try {
+    const { followingIds } = req.body;
+
+    if (!Array.isArray(followingIds) || followingIds.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Following IDs are required" });
+    }
+
+    // Validate each ID in the array
+    const validIds = followingIds.filter((id) =>
+      mongoose.Types.ObjectId.isValid(id)
+    );
+
+    if (validIds.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "No valid following IDs provided" });
+    }
+
+    // Fetch user data for the valid IDs
+    const users = await User.find({ _id: { $in: validIds } }).select(
+      "username dp bio firstname lastname email"
+    );
+
+    if (!users || users.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "No users found for the given IDs" });
+    }
+
+    res.status(200).json({ success: true, users });
+  } catch (err) {
+    console.error("Error fetching following data:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// This API is to get the data of the people who follow me
+app.post('/get-followers-data', authenticateToken, async (req, res) => {
+  try {
+    const { followerIds } = req.body;
+
+    // Validate the input
+    if (!followerIds || !Array.isArray(followerIds) || followerIds.length === 0) {
+      return res
+        .status(400)
+        
+        .json({ success: false, message: "Follower IDs are required and must be an array" });
+    }
+
+    // Validate each ID in the array
+    const validIds = followerIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    if (validIds.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "No valid follower IDs provided" });
+    }
+
+    // Fetch user data for the valid IDs
+    const users = await User.find({ _id: { $in: validIds } }).select(
+      "username dp bio firstname lastname email"
+    );
+
+    if (!users || users.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "No users found for the given IDs" });
+    }
+
+    // Return the fetched user data
+    res.status(200).json({ success: true, users });
+  } catch (err) {
+    console.error("Error fetching followers data:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+app.get("/user/:username", authenticateToken, async (req, res) => {
+
+  const { username } = req.params;
+
+  try {
+    const user = await User.findOne({ username }).select("_id username dp bio firstname lastname email");
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.status(200).json({ success: true, user });
+  } catch (error) {
+    console.error("Error fetching user data:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+app.get("/postfollowing", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.query.userId || req.user.id; // Get userId from query or token
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid user ID" });
+    }
+
+    const followingData = await Following.find({ userId });
+
+    res.status(200).json({ success: true, following: followingData });
+  } catch (err) {
+    console.error("Error getting following data:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+// app.get('/postfollowers', authenticateToken, async (req, res) => {
+//   try {
+//     // Check if the user ID is valid
+//     if (!mongoose.Types.ObjectId.isValid(req.user.id)) {
+//       return res.status(400).json({ success: false, message: 'Invalid user ID' });
+//     }
+
+//     // Fetch the followers of the user
+//     const followersData = await Following.find({ followingId: req.user.id });
+
+//     if (!followersData || followersData.length === 0) {
+//       return res.status(404).json({ success: false, message: 'No followers found' });
+//     }
+//     // Respond with the list of followers
+//     res.status(200).json({ success: true, followers: followersData });
+//   } catch (err) {
+//     console.error('Error getting followers data:', err);
+//     res.status(500).json({ success: false, message: 'Server error' });
+//   }
+// });
+
+// Get user ID from username
+app.get('/searchedfollowers/:username', authenticateToken, async (req, res) => {
+  const { username } = req.params;
+
+  try {
+    const user = await User.findOne({ username }).select("_id");
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    res.status(200).json({ success: true, searchedId: user._id });  
+  } catch (err) {
+    console.error('Error getting user ID:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Get followers count based on user ID
+app.get('/followers/:searchedId', authenticateToken, async (req, res) => {  
+  const { searchedId } = req.params;
+
+  try {
+    const followers = await Following.find({ followingId: searchedId }).select("userId");  
+
+
+    if (!followers || followers.length === 0) {  
+      return res.status(404).json({ success: false, message: "No followers found" });
+    }
+
+    res.status(200).json({ success: true, followersCount: followers.length });  //here i need to pass all data like who follow me 
+    //so that i can make an api call to the user
+  } catch (e) {
+    console.error("Server Error:", e);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+app.post('/profile/edit', authenticateToken, upload.single('dp'), async (req, res) => {
+  const { name, bio, details } = req.body;
+  let dp = req.file ? req.file.path : null; // Check if a file was uploaded and get the file path
+
+  try {
+
+    const userdata = await User.findByIdAndUpdate(req.user.id, {
+      name,
+      bio,
+      details,
+      dp  // Update dp with the new file path if available
+    }, { new: true });
+
+    if (!userdata) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.status(200).json({ success: true, message: "Profile updated successfully", user: userdata });
+  } catch (error) {
+    console.error("Error updating profile:", error);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
